@@ -8,7 +8,7 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
-#include "lbfgs.h"
+#include <lbfgs.h>
 
 double sqr(double x) { return x * x; };
 
@@ -193,6 +193,27 @@ public:
         //      For all other sites Pj (optionally, only k nearest neighbors) :
         //          Clip it with bisector of [Pi,Pj]
         //      (Lab 3, fluids) : also clip it by a disk of radius sqrt(w_i - w_air) centered at Pi
+        cells.resize(points.size());
+        #pragma omp parallel for
+        for (int i = 0; i < (int)points.size(); i++) {
+            Polygon cell;
+            cell.vertices.push_back(Vector(0, 0));
+            cell.vertices.push_back(Vector(1, 0));
+            cell.vertices.push_back(Vector(1, 1));
+            cell.vertices.push_back(Vector(0, 1));
+
+            for (int j = 0; j < (int)points.size(); j++) {
+                if (i == j) {
+                    continue;
+                }
+                cell = clip_by_bisector(cell, points[i], points[j], 0, 0);
+                if (cell.vertices.empty()) {
+                    break;
+                }
+            }
+
+            cells[i] = cell;
+        }
     }
 
 
@@ -215,6 +236,30 @@ public:
         // TODO Lab 2 (Semi-Discrete Optimal Transport) : extend to Laguerre cells, i.e., w0 != w1
 
         Polygon result;
+        result.vertices.reserve(V.vertices.size() + 1);
+        if (V.vertices.empty()) {
+            return result;
+        }
+
+        Vector M = (Pi + Pj) / 2;
+        Vector normal = Pj - Pi;
+
+        for (int i = 0; i < (int)V.vertices.size(); i++) {
+            Vector A = V.vertices[i];
+            Vector B = V.vertices[(i + 1) % V.vertices.size()];
+
+            bool A_inside = dot(A - M, normal) <= 0;
+            bool B_inside = dot(B - M, normal) <= 0;
+
+            if (A_inside != B_inside) {
+                double t = dot(M - A, Pi - Pj) / dot(B - A, Pi - Pj);
+                result.vertices.push_back(A + t * (B - A));
+            }
+
+            if (B_inside) {
+                result.vertices.push_back(B);
+            }
+        }
 
         return result;
     }
@@ -337,7 +382,7 @@ public:
 };
 
 // saves a static svg file. The polygon vertices are supposed to be in the range [0..1], and a canvas of size 1000x1000 is created
-void save_svg(const std::vector<Polygon>& polygons, std::string filename, std::string fillcol = "none") {
+void save_svg(const std::vector<Polygon>& polygons, std::string filename, const std::vector<Vector>* points = NULL, std::string fillcol = "none") {
     FILE* f = fopen(filename.c_str(), "w+");
     fprintf(f, "<svg xmlns = \"http://www.w3.org/2000/svg\" width = \"1000\" height = \"1000\">\n");
     for (int i = 0; i < polygons.size(); i++) {
@@ -349,6 +394,16 @@ void save_svg(const std::vector<Polygon>& polygons, std::string filename, std::s
         fprintf(f, "\"\nfill = \"%s\" stroke = \"black\"/>\n", fillcol.c_str());
         fprintf(f, "</g>\n");
     }
+
+    if (points) {
+        fprintf(f, "<g>\n");
+        for (int i = 0; i < points->size(); i++) {
+            fprintf(f, "<circle cx = \"%3.3f\" cy = \"%3.3f\" r = \"3\" />\n", (*points)[i][0] * 1000., 1000. - (*points)[i][1] * 1000);
+        }
+        fprintf(f, "</g>\n");
+
+    }
+
     fprintf(f, "</svg>\n");
     fclose(f);
 }
@@ -359,18 +414,23 @@ void save_svg(const std::vector<Polygon>& polygons, std::string filename, std::s
 
 
 
+
 int main() {
-
-    Polygon p;
-    p.vertices.push_back(Vector(0.1, 0.2));
-    p.vertices.push_back(Vector(0.6, 0.4));
-    p.vertices.push_back(Vector(0.5, 0.7));
-    p.vertices.push_back(Vector(0.2, 0.5));
-
-    std::vector<Polygon> s;
-    s.push_back(p);
-
-    save_frame(s, "toto");
-    save_svg(s, "toto.svg");
-    return 0;
-}
+        VoronoiDiagram vor;
+    
+        int N = 1000;
+        srand(0);
+    
+        for (int i = 0; i < N; i++) {
+            double x = 0.05 + 0.90 * rand() / (double)RAND_MAX;
+            double y = 0.05 + 0.90 * rand() / (double)RAND_MAX;
+            vor.points.push_back(Vector(x, y));
+        }
+    
+        vor.compute();
+    
+        save_frame(vor.cells, "voronoi2");
+        save_svg(vor.cells, "voronoi2.svg");
+    
+        return 0;
+    }
