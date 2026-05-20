@@ -52,6 +52,9 @@ Vector operator/(const Vector& a, const double b) {
 double dot(const Vector& a, const Vector& b) {
     return a[0] * b[0] + a[1] * b[1];
 }
+double cross(const Vector& a, const Vector& b) {
+    return a[0] * b[1] - a[1] * b[0];
+}
 
 
 class Polygon {
@@ -59,9 +62,13 @@ public:
 
     double area() {
         if (vertices.size() < 3) return 0;
-        // TODO Lab 3
-        // Compute the area of the polygon
-        return -111;
+        double sum = 0;
+        int m = (int)vertices.size();
+        for (int i = 0; i < m; i++) {
+            int j = (i + 1) % m;
+            sum += vertices[i][0] * vertices[j][1] - vertices[j][0] * vertices[i][1];
+        }
+        return 0.5 * fabs(sum);
     }
 
     Vector centroid() {
@@ -73,12 +80,17 @@ public:
     }
 
     double integral_square_distance(const Vector& Pi) {
-        if (vertices.size() < 3) return 0;
-
-        // TODO Lab 3
-        // Compute the integral of ||x-Pi||^2 over the polygon
-
-        return -111;
+        double total = 0;
+        int m = vertices.size();
+        for (int i = 0; i < m; i++) {
+            Vector B = vertices[i];
+            Vector C = vertices[(i + 1) % m];
+            double areaT = 0.5 * fabs(cross(B - Pi, C - Pi));  
+            Vector b = B - Pi;
+            Vector c = C - Pi;
+            total += areaT / 6.0 * (dot(b,b) + dot(c,c) + dot(b,c));
+        }
+        return total;
     }
 
     std::vector<Vector> vertices;
@@ -194,7 +206,11 @@ public:
         //          Clip it with bisector of [Pi,Pj]
         //      (Lab 3, fluids) : also clip it by a disk of radius sqrt(w_i - w_air) centered at Pi
         cells.resize(points.size());
-        #pragma omp parallel for
+        if (weights.size() != points.size()) {
+            weights.resize(points.size(), 0.0);
+        }
+
+#pragma omp parallel for
         for (int i = 0; i < (int)points.size(); i++) {
             Polygon cell;
             cell.vertices.push_back(Vector(0, 0));
@@ -206,7 +222,7 @@ public:
                 if (i == j) {
                     continue;
                 }
-                cell = clip_by_bisector(cell, points[i], points[j], 0, 0);
+                cell = clip_by_bisector(cell, points[i], points[j], weights[i], weights[j]);
                 if (cell.vertices.empty()) {
                     break;
                 }
@@ -241,18 +257,23 @@ public:
             return result;
         }
 
+        Vector d = Pj - Pi;
+        double d2 = d.norm2();
+       
+
         Vector M = (Pi + Pj) / 2;
-        Vector normal = Pj - Pi;
+        Vector Mp = M + (w0 - wi) / (2 * d2) * d;
 
         for (int i = 0; i < (int)V.vertices.size(); i++) {
             Vector A = V.vertices[i];
             Vector B = V.vertices[(i + 1) % V.vertices.size()];
 
-            bool A_inside = dot(A - M, normal) <= 0;
-            bool B_inside = dot(B - M, normal) <= 0;
+            bool A_inside = dot(A - Mp, d) <= 0;
+            bool B_inside = dot(B - Mp, d) <= 0;
 
             if (A_inside != B_inside) {
-                double t = dot(M - A, Pi - Pj) / dot(B - A, Pi - Pj);
+                double denom = dot(B - A, Pi - Pj);
+                double t = dot(Mp - A, Pi - Pj) / denom;
                 result.vertices.push_back(A + t * (B - A));
             }
 
@@ -304,10 +325,19 @@ static lbfgsfloatval_t evaluate(
    
     // Lab 2 (Optimal transport) : compute the function to be minimized (fx) and its gradient (g[i], i=0..n-1)
     // Lab 3 (fluid) : adapt these functions to support partial optimal transport (now "n" has been increased by 1 to account for the air variable)
-    
+
     lbfgsfloatval_t fx = 0.0;
-    // g[i] = ...
-    // fx = ...
+    double lambda = 1.0 / n;
+
+    for (int i = 0; i < n; i++) {
+        double A = ot->vor.cells[i].area();
+        double I = ot->vor.cells[i].integral_square_distance(ot->vor.points[i]);
+        double wi = ot->vor.weights[i];
+
+        fx += I - wi * A + lambda * wi;
+        g[i] = A - lambda;
+    }
+    fx = -fx;
 
     return fx;
 }
@@ -416,22 +446,30 @@ void save_svg(const std::vector<Polygon>& polygons, std::string filename, const 
 
 
 int main() {
-        VoronoiDiagram vor;
-    
-        int N = 1000;
-        srand(0);
-    
-        for (int i = 0; i < N; i++) {
-            double x = 0.05 + 0.90 * rand() / (double)RAND_MAX;
-            double y = 0.05 + 0.90 * rand() / (double)RAND_MAX;
-            vor.points.push_back(Vector(x, y));
-        }
-    
-        vor.compute();
-    
-        save_frame(vor.cells, "voronoi2");
-        save_svg(vor.cells, "voronoi2.svg");
-    
-        return 0;
+    OptimalTransport ot;
+
+    int N = 100;
+    srand(0);
+
+    for (int i = 0; i < N; i++) {
+        double x = 0.05 + 0.90 * rand() / (double)RAND_MAX;
+        double y = 0.05 + 0.90 * rand() / (double)RAND_MAX;
+        ot.vor.points.push_back(Vector(x, y));
+        ot.vor.weights.push_back(0.0);
     }
 
+    ot.vor.compute();
+    save_frame(ot.vor.cells, "ot_before");
+    save_svg(ot.vor.cells, "ot_before.svg", &ot.vor.points);
+
+    ot.optimize();
+
+    for (int i = 0; i < N; i++) {
+        printf("%f\n", ot.vor.cells[i].area() - 1.0 / N);
+    }
+
+    save_frame(ot.vor.cells, "ot");
+    save_svg(ot.vor.cells, "ot.svg", &ot.vor.points);
+
+    return 0;
+}
