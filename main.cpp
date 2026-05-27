@@ -438,13 +438,6 @@ void save_svg(const std::vector<Polygon>& polygons, std::string filename, const 
     fclose(f);
 }
 
-
-
-
-
-
-
-
 int main() {
     OptimalTransport ot;
 
